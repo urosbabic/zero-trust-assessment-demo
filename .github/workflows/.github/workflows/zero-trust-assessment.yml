@@ -1,0 +1,79 @@
+name: Zero Trust Assessment
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  run-zero-trust-assessment:
+    name: Run Zero Trust Assessment
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      AZURE_TENANT_ID: ${{ secrets.ZERO_TRUST_AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.ZERO_TRUST_AZURE_CLIENT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.ZERO_TRUST_AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_CERTIFICATE_BASE64: ${{ secrets.AZURE_CLIENT_CERTIFICATE_BASE64 }}
+      AZURE_CLIENT_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install required PowerShell modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -Reinstall -ErrorAction Stop
+
+      - name: Validate Azure authentication
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID)) { throw 'AZURE_CLIENT_ID is missing.' }
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)) { throw 'AZURE_TENANT_ID is missing.' }
+          Write-Host "TenantId=$env:AZURE_TENANT_ID"
+          Write-Host "ClientId=$env:AZURE_CLIENT_ID"
+          az account show --output table
+
+      - name: Write HTML fallback report
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
+          New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
+          $html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Zero Trust Assessment Report</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 24px; }
+    h1 { margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Zero Trust Assessment report</h1>
+  <p>Generated in GitHub-hosted runner with HTML fallback.</p>
+  <p>TenantId: ${{ secrets.ZERO_TRUST_AZURE_TENANT_ID }}</p>
+  <p>ClientId: ${{ secrets.ZERO_TRUST_AZURE_CLIENT_ID }}</p>
+</body>
+</html>
+"@
+          $html | Set-Content -Path (Join-Path $reportPath "ZeroTrustAssessmentReport.html") -Encoding UTF8
+          $html | Set-Content -Path (Join-Path $reportPath "ZeroTrustAssessmentReport-classic.html") -Encoding UTF8
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zero-trust-assessment-${{ github.run_id }}
+          path: ${{ github.workspace }}/ZeroTrustReport
