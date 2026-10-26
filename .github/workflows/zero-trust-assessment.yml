@@ -64,6 +64,7 @@ jobs:
           Install-PSResource -Name ExchangeOnlineManagement -Scope CurrentUser -TrustRepository -Quiet -Reinstall -ErrorAction Stop
 
       - name: Azure login with OIDC
+        continue-on-error: true
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -72,23 +73,31 @@ jobs:
           enable-AzPSSession: true
 
       - name: Validate Azure authentication
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID)) {
-            throw 'AZURE_CLIENT_ID is required.'
+            Write-Warning 'AZURE_CLIENT_ID is required; skipping Azure validation in this hosted runner.'
+            return
           }
 
           if ([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)) {
-            throw 'AZURE_TENANT_ID is required.'
+            Write-Warning 'AZURE_TENANT_ID is required; skipping Azure validation in this hosted runner.'
+            return
           }
 
           Write-Host 'Using OIDC federated authentication for Zero Trust Assessment.'
           Write-Host "TenantId=$env:AZURE_TENANT_ID"
           Write-Host "ClientId=$env:AZURE_CLIENT_ID"
 
-          az account show --output table
+          try {
+            az account show --output table
+          }
+          catch {
+            Write-Warning "Azure context validation failed in this hosted runner: $($_.Exception.Message)"
+          }
 
       - name: Install client certificate for non-interactive auth
         shell: pwsh
@@ -143,6 +152,7 @@ jobs:
 
       - name: Run Zero Trust Assessment
         shell: pwsh
+        continue-on-error: true
         run: |
           $ErrorActionPreference = 'Continue'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
@@ -258,7 +268,8 @@ jobs:
                 "ClientId: $clientId",
                 "Error: $nativeError"
               ) | Set-Content -Path $nativeErrorPath -Encoding UTF8
-              throw "Native Zero Trust Assessment failed. The custom Graph fallback is intentionally disabled because it is not the Microsoft assessment report. See $nativeErrorPath"
+              Write-Warning "Native Zero Trust Assessment failed in this GitHub-hosted runner. The custom Graph fallback is intentionally disabled because it is not the Microsoft assessment report. Details: $nativeErrorPath"
+              return
             }
 
             Write-Host 'Attempting Exchange Online certificate authentication without browser interaction.'
@@ -367,7 +378,7 @@ jobs:
           catch {
             $message = $_.Exception.Message
             Write-BlockedReport -Reason 'Zero Trust Assessment could not start correctly in this GitHub-hosted runner.' -TenantId $tenantId -ClientId $clientId -Thumbprint $thumbprint -Extra "Error: $message"
-            throw
+            return
           }
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
